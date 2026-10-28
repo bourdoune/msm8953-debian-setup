@@ -1,0 +1,23 @@
+[Unit]
+Description=MSM8953 / PMI8950 Battery Charging Current Watchdog
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c '\
+while true; do \
+    for base in /sys/class/power_supply/battery /sys/class/power_supply/usb; do \
+        if [ -d "$base" ]; then \
+            [ -f "$base/device/USB_SUSPEND/force_val" ] && echo 0 > "$base/device/USB_SUSPEND/force_val" 2>/dev/null; \
+            [ -f "$base/device/USB_SUSPEND/force_active" ] && echo 1 > "$base/device/USB_SUSPEND/force_active" 2>/dev/null; \
+            [ -f "$base/device/USB_ICL/force_val" ] && echo 900 > "$base/device/USB_ICL/force_val" 2>/dev/null; \
+            [ -f "$base/device/USB_ICL/force_active" ] && echo 1 > "$base/device/USB_ICL/force_active" 2>/dev/null; \
+        fi; \
+    done; \
+    sleep 30; \
+done'
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

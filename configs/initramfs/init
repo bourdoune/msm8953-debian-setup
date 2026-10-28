@@ -1,0 +1,129 @@
+#!/bin/sh
+# Early initramfs boot script for MSM8953 (Snapdragon 625) devices
+# Mounts essential virtual filesystems, initializes USB ConfigFS gadget,
+# locates the Debian root filesystem, and performs switch_root to systemd.
+
+set -e
+
+# 1. Mount virtual filesystems
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || mount -t tmpfs dev /dev
+
+echo "======================================================="
+echo "   MSM8953 Debian Linux Early Boot Initramfs           "
+echo "======================================================="
+
+# 2. Insert USB gadget kernel modules (if compiled as modules)
+modprobe libcomposite 2>/dev/null || insmod /lib/modules/libcomposite.ko 2>/dev/null || true
+modprobe u_ether 2>/dev/null || insmod /lib/modules/u_ether.ko 2>/dev/null || true
+modprobe usb_f_ncm 2>/dev/null || insmod /lib/modules/usb_f_ncm.ko 2>/dev/null || true
+modprobe usb_f_rndis 2>/dev/null || insmod /lib/modules/usb_f_rndis.ko 2>/dev/null || true
+
+# 3. Configure USB ConfigFS network gadget for early host connectivity
+mount -t configfs none /sys/kernel/config 2>/dev/null || true
+GADGET=/sys/kernel/config/usb_gadget/g1
+
+if [ -d /sys/kernel/config/usb_gadget ] && [ ! -d "$GADGET" ]; then
+    mkdir -p $GADGET
+    echo "0x18d1" > $GADGET/idVendor
+    echo "0xd001" > $GADGET/idProduct
+    mkdir -p $GADGET/strings/0x409
+    echo "msm8953debian" > $GADGET/strings/0x409/serialnumber
+    echo "Linux-MSM8953" > $GADGET/strings/0x409/manufacturer
+    echo "Snapdragon 625 Linux Workstation" > $GADGET/strings/0x409/product
+
+    FUNC=""
+    if mkdir $GADGET/functions/ncm.usb0 2>/dev/null; then
+        FUNC="ncm.usb0"
+    elif mkdir $GADGET/functions/rndis.usb0 2>/dev/null; then
+        FUNC="rndis.usb0"
+    fi
+
+    # Fixed MAC addresses for predictable host-side interface recognition
+    echo "02:00:00:00:00:01" > $GADGET/functions/$FUNC/host_addr 2>/dev/null || true
+    echo "02:00:00:00:00:02" > $GADGET/functions/$FUNC/dev_addr 2>/dev/null || true
+
+    mkdir -p $GADGET/configs/c.1/strings/0x409
+    echo "USB Network" > $GADGET/configs/c.1/strings/0x409/configuration
+    [ -n "$FUNC" ] && ln -s $GADGET/functions/$FUNC $GADGET/configs/c.1/
+
+    UDC=$(ls /sys/class/udc/ 2>/dev/null | head -n 1)
+    if [ -n "$UDC" ]; then
+        echo "$UDC" > $GADGET/UDC 2>/dev/null || true
+        echo "[+] Bound USB gadget to controller: $UDC ($FUNC)"
+    fi
+
+    sleep 1
+    IFNAME=$(cat $GADGET/functions/*/ifname 2>/dev/null | head -n 1)
+    [ -z "$IFNAME" ] && IFNAME=$(ls /sys/class/net 2>/dev/null | grep -E 'usb|ncm|rndis|eth' | head -n 1)
+    if [ -n "$IFNAME" ]; then
+        ip link set $IFNAME up 2>/dev/null || ifconfig $IFNAME up 2>/dev/null || true
+        ip addr add 192.168.140.121/24 dev $IFNAME 2>/dev/null || ifconfig $IFNAME 192.168.140.121 netmask 255.255.255.0 2>/dev/null || true
+        echo "[+] Configured USB network IP on $IFNAME: 192.168.140.121/24"
+    fi
+fi
+
+# 4. Storage discovery and rootfs mount
+# Default partition targets:
+# - Userdata loop image: /dev/mmcblk0p50 (standard on Xiaomi Redmi 5 Plus)
+# - MicroSD card: /dev/mmcblk1p1 or /dev/mmcblk1p2
+echo "[*] Waiting for storage devices..."
+TRIES=0
+STORAGE_DEV=""
+
+while [ $TRIES -lt 30 ]; do
+    mdev -s 2>/dev/null || true
+    if [ -b /dev/mmcblk0p50 ]; then
+        STORAGE_DEV="/dev/mmcblk0p50"
+        break
+    elif [ -b /dev/mmcblk1p1 ]; then
+        STORAGE_DEV="/dev/mmcblk1p1"
+        break
+    fi
+    sleep 1
+    TRIES=$((TRIES + 1))
+done
+
+if [ -z "$STORAGE_DEV" ]; then
+    echo "[!] Target storage partition not found after 30 seconds."
+    echo "[!] Dropping to rescue shell. Type 'exit' to retry."
+    exec /bin/sh
+fi
+
+mkdir -p /mnt/storage
+mount -t ext4 -o rw,noatime,data=ordered $STORAGE_DEV /mnt/storage 2>/dev/null || \
+mount -t ext4 -o rw $STORAGE_DEV /mnt/storage 2>/dev/null || \
+mount -t f2fs -o rw $STORAGE_DEV /mnt/storage 2>/dev/null || \
+mount $STORAGE_DEV /mnt/storage
+
+mkdir -p /sysroot
+
+# Check if rootfs is stored as a raw ext4 image inside storage partition
+if [ -f /mnt/storage/debian_rootfs.img ]; then
+    echo "[+] Found loop rootfs image: /mnt/storage/debian_rootfs.img"
+    losetup /dev/loop0 /mnt/storage/debian_rootfs.img
+    mount -t ext4 -o rw,noatime /dev/loop0 /sysroot
+else
+    # Direct partition rootfs
+    echo "[+] Using direct filesystem on $STORAGE_DEV"
+    mount --move /mnt/storage /sysroot
+fi
+
+# 5. Verify systemd / init binary exists in sysroot
+if [ ! -x /sysroot/lib/systemd/systemd ] && [ ! -x /sysroot/sbin/init ]; then
+    echo "[!] ERROR: No init binary found in /sysroot (/lib/systemd/systemd or /sbin/init)"
+    echo "[!] Dropping to rescue shell."
+    exec /bin/sh
+fi
+
+INIT_BIN="/lib/systemd/systemd"
+[ ! -x "/sysroot$INIT_BIN" ] && INIT_BIN="/sbin/init"
+
+# 6. Move virtual filesystems into sysroot
+mount --move /dev /sysroot/dev
+mount --move /proc /sysroot/proc
+mount --move /sys /sysroot/sys
+
+echo "[+] Executing switch_root to $INIT_BIN..."
+exec switch_root /sysroot "$INIT_BIN"

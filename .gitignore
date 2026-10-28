@@ -1,0 +1,15 @@
+# Build outputs
+out/
+rootfs_staging/
+initramfs_staging/
+mnt_tmp/
+msm8953-linux-kernel-improved/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# System artifacts
+*.img
+*.cpio.gz
+*.tar.gz

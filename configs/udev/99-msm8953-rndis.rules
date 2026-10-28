@@ -1,0 +1,4 @@
+# Udev rule for automatic MSM8953 USB RNDIS/NCM gadget network configuration on host Linux PC
+# Matches Google/Android gadget ID (18d1:d001) or network subsystem
+SUBSYSTEM=="net", ACTION=="add|bind|move", ATTRS{idVendor}=="18d1", ATTRS{idProduct}=="d001", RUN+="/usr/local/bin/setup-msm8953-host.sh %k"
+SUBSYSTEM=="net", ACTION=="add|bind|move", KERNEL=="enx*|rndis*|usb*", ATTRS{idVendor}=="18d1", RUN+="/usr/local/bin/setup-msm8953-host.sh %k"

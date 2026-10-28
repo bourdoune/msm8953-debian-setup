@@ -1,0 +1,11 @@
+[Unit]
+Description=Turn off screen backlight for headless operation
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'if [ -d /sys/class/backlight/backlight ]; then echo 0 > /sys/class/backlight/backlight/brightness; echo 4 > /sys/class/backlight/backlight/bl_power; fi'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
